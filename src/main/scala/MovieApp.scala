@@ -26,10 +26,12 @@ object MovieApp extends ZIOAppDefault {
       movieToZIO(movie).either
     }
 
-    errors = res.collect{case Left(er) => er}
+    compoundError = CompoundError(
+      res.collect{case Left(er) => er}
+    )
 
     _ <- ZIO
-      .when(errors.nonEmpty)(Console.printLine(errors))
+      .when(compoundError.errs.nonEmpty)(Console.printLine(compoundError.errs))
       .orDie
 
   } yield "Movie Scan is Over"
