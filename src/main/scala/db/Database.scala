@@ -1,17 +1,21 @@
 package db
 
-import zio.{Task, UIO, ZIO}
+import zio.{IO, Random, UIO, ZIO}
 
-case class Database(dbName: String, user: String) {
-  def read(recId: Int): UIO[String] =
-    ZIO.succeed(s"$dbName-$user-$recId").debug
 
-  def write(rec: String): UIO[String] = ZIO.succeed((s"[$dbName] Write [$rec]")).debug
 
-  def close: UIO[String] = ZIO.succeed(s"[$dbName] Connection Closed").debug
+case class Database(dbName: String) {
+  def write(fileName: String, rec: String): UIO[String] = ZIO.succeed((s"[$dbName] Write [$fileName][$rec]")).debug
+
+  def close: UIO[String] = ZIO.succeed(s"Connection Closed").debug
 }
 
 object Database {
-  def connect(dbName: String, user: String): Task[Database] =
-    ZIO.succeed(Database(dbName, user))
+  def connect(dbName: String): IO[String, Database] = {
+    for {
+      n <- Random.nextIntBetween(0, 2)
+      _ <- ZIO.fail("Failed to establish db connection").when(n == 0)
+      conn <- ZIO.succeed(new Database(dbName))
+    } yield conn
+  }
 }

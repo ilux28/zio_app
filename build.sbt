@@ -11,4 +11,6 @@ lazy val zioVersion = "2.1.15"
 
 libraryDependencies ++= Seq(
   "dev.zio" %% "zio" % zioVersion
+
 )
+

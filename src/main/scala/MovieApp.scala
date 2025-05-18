@@ -1,4 +1,4 @@
-import zio.{Console, IO, UIO, ZIO, ZIOAppDefault}
+import zio.{Console, UIO, ZIO, ZIOAppDefault}
 
 object MovieApp extends ZIOAppDefault {
 
