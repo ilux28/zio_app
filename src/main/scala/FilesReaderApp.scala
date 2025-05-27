@@ -1,4 +1,6 @@
-import zio.{Console, ExitCode, Scope, Task, UIO, ZIO, ZIOAppDefault}
+import ResourceApp.file
+import db.Database
+import zio.{Console, ExitCode, IO, Scope, Task, UIO, URIO, ZIO, ZIOAppDefault}
 
 import java.io.{File, IOException}
 import scala.io.{BufferedSource, Source}
@@ -11,15 +13,7 @@ object FilesReaderApp extends ZIOAppDefault {
 
   final case class EndStatus(status: String)
 
-  final case class InappropriateFile(message: String)
-
-  val useDefaultDirectoryQuestion = Console.printLine("Use default directory?")
-
-  val useDefaultDirectoryAnswer = Console.readLine
-
   val defaultDirStr = "src/main/resources/bania"
-  val defaultDirStr1 = "src/main/resources/bania/example1.txt"
-
 
   val usingQuestionEffect = Console.printLine("Directory not found. Use default directory?")
 
@@ -38,72 +32,105 @@ object FilesReaderApp extends ZIOAppDefault {
     }
   }
 
-  def fileToBufferedSource(file: File): Task[List[BufferedSource]] = {
+  def fileToContentStr(file: File): IO[String, String] = {
+
     val fileName = file.getName
     val extension = fileName.slice(fileName.length - 4, fileName.length)
     if (extension == ".txt") {
-      ZIO.attempt(List(Source.fromFile(file)))
+
+      val readStr = ZIO.scoped {
+        for {
+          source <- acureReleaseFile(fileName)
+          content <- ZIO.attempt(source.getLines.mkString(";"))
+        } yield content
+      }
+      readStr
+
     } else ZIO.fail(new IllegalArgumentException("Inappropriate file format!"))
   }
+    .foldZIO(
+      failure => ZIO.fail(failure.getMessage),
+      success => ZIO.succeed(success)
+    )
 
-  def walkRecursion(directory: File): Task[List[BufferedSource]] = directory match {
+  def readerRecursion(directory: File): IO[List[String], List[String]] = {
 
-    case directory if directory.isDirectory && directory.exists() =>
+    if (directory.exists() && directory.isDirectory) {
+      val files: List[File] = directory.listFiles().toList
 
-      val directoryList = directory.listFiles().toList
+      val ioResults: List[IO[List[String], List[String]]] = files.map { file =>
+        if (file.isDirectory) {
+          readerRecursion(file)
+        } else if (file.isFile) {
+          fileToContentStr(file)
+            .mapError(err => List(err))
+            .map(content => List(s"$content\n"))
+        } else {
+          val listStr: List[String] = List.empty
+          ZIO.attempt(listStr).mapError(_ => List.empty[String])
+        }
+      }
 
-      ZIO.foreachPar(directoryList)(file => walkRecursion(file))
-        .map(_.flatten())
+      val collected: IO[List[String], List[String]] = ZIO
+        .collectAllPar(ioResults.map(_.either))
+        .flatMap { results =>
+          val (failures, successes) = results.partitionMap(identity)
+          if (failures.nonEmpty) ZIO.succeed(failures.flatten)
+          else ZIO.succeed(successes.flatten)
+        }
 
-    case file if file.isFile => fileToBufferedSource(file)
+      collected
 
-    case _ => ZIO.fail(new IllegalArgumentException("Inappropriate file format!"))
-  }
-  
-  
-  def acquire(directory: File): Task[List[BufferedSource]] = walkRecursion(directory)
-    
-    
-//    if (directory.isDirectory()) {
-//
-//      val walkFiles = directory.listFiles()
-//        //        .filter(_.isFile)
-//        .map {
-//          case directory if directory.isDirectory => acquire(directory) 
-//          case file if file.isFile => fileToBufferedSource(file)
-//            
-//          case _ => ZIO.fail(new IllegalArgumentException("Inappropriate file format!")) 
-//        }
-//        .toList
-//
-//      val walkList: List[BufferedSource] = walkFiles.collect { case bufferedSource: BufferedSource => bufferedSource }
-//
-//
-//  }
-
-  def release(resource: List[BufferedSource]): UIO[List[Unit]] = {
-    ZIO.foreach(resource) { bufferedSource =>
-      ZIO.succeed(bufferedSource.close())
+    } else if (directory.exists() && directory.isFile) {
+      fileToContentStr(directory)
+        .map(content => List(content))
+        .mapError(err => List(err))
+        
+    } else {
+      ZIO
+        .attempt(List.empty[String])
+        .mapError(_ => List("Inappropriate file format!"))
     }
   }
 
-  def readFileContent(file: File): ZIO[Any & Scope, Throwable, List[String]] = ZIO
-    .acquireRelease(acquire(file))(list => release(list))
-    .flatMap(sources => ZIO.foreach(sources) { source =>
-      ZIO.attempt(source.getLines.mkString(";"))
-    })
-//    .foldZIO(
-//      failure => ZIO.succeed(failure.getMessage),
-//      success => ZIO.succeed(success)
-//    )
+  def acquire(file: String): Task[BufferedSource] = ZIO.attempt(Source.fromFile(file))
 
-  def poroccessReading = for {
+  def release(resource: BufferedSource): UIO[Unit] = ZIO.succeed(resource.close())
+
+  def acureReleaseFile(file: String): ZIO[Any & Scope, Throwable, BufferedSource] = ZIO
+    .acquireRelease(acquire(file))(source => release(source))
+
+  val acureReleaseDb = ZIO.acquireRelease(Database.connect("db#1"))(db => db.close)
+
+
+  def poroccessReadingEffect = for {
     _ <- startMessage
     enterDirectory <- enteredDir
     useFile <- checkDirectory(enterDirectory)
-    content <- readFileContent(useFile)
+    readContent <- readerRecursion(useFile)
+//      .mapError(err => err.foreach(errStr => Console.printLine(errStr)))
 
-  } yield content.mkString("\n")
+  } yield readContent.mkString(" ")
 
-  override def run = poroccessReading.debug.exitCode
+  //    left <- either.left
+  //    _ <- Console.printLine(left))
+
+
+  //    _ <- Console.printLine(left.map(str => s"$str\n"))
+
+  //    resultWriting <- acureReleaseDb.map(_.write("src/main/resources/bania/reading_files.txt", right.mkString("")))
+
+  //    resultStr <- resultWriting
+
+  val result = poroccessReadingEffect.foldZIO(
+    failure => {
+      failure match {
+        case str: String => ZIO.succeed(EndStatus(str))
+        case _ => ZIO.succeed(EndStatus("Failed to establish db connection"))
+      }
+    },
+    success => ZIO.succeed(EndStatus(success))
+  )
+
+  override def run = result.debug
 }
